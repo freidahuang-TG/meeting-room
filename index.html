@@ -204,27 +204,27 @@
         return null;
     }
 
-    // 判斷某 seriesId 是否為週期性（出現在多個不同日期）
-    function isRecurring(seriesId) {
-        var dates = [];
-        var dks = Object.keys(bookingCache);
+    // 從 Firebase 即時判斷某 seriesId 是否出現在多個不同日期
+    async function isRecurring(seriesId) {
+        var snap = await get(child(ref(db), 'bookings'));
+        if (!snap.exists()) return false;
+        var all = snap.val();
+        var count = 0;
+        var dks = Object.keys(all);
         for (var i = 0; i < dks.length; i++) {
-            var dk = dks[i];
-            var dateData = bookingCache[dk];
+            var dateData = all[dks[i]];
             if (!dateData) continue;
             var rks = Object.keys(dateData);
             var foundInDate = false;
             for (var j = 0; j < rks.length && !foundInDate; j++) {
                 var slots = dateData[rks[j]];
                 if (!slots) continue;
-                var slotKeys = Object.keys(slots);
-                for (var k = 0; k < slotKeys.length; k++) {
-                    if (slots[slotKeys[k]] && slots[slotKeys[k]].seriesId === seriesId) {
-                        foundInDate = true; break;
-                    }
+                var skeys = Object.keys(slots);
+                for (var k = 0; k < skeys.length; k++) {
+                    if (slots[skeys[k]] && slots[skeys[k]].seriesId === seriesId) { foundInDate = true; break; }
                 }
             }
-            if (foundInDate) { dates.push(dk); if (dates.length > 1) return true; }
+            if (foundInDate) { count++; if (count > 1) return true; }
         }
         return false;
     }
@@ -234,16 +234,6 @@
         if (bookingCache[dk] !== undefined) return;
         var snap = await get(child(ref(db), 'bookings/'+dk));
         bookingCache[dk] = snap.exists() ? snap.val() : {};
-    }
-
-    // 初始化時載入所有日期資料，確保 isRecurring 第一次就能正確判斷
-    async function loadAllBookings() {
-        var snap = await get(child(ref(db), 'bookings'));
-        if (!snap.exists()) return;
-        var all = snap.val();
-        Object.keys(all).forEach(function(dk) {
-            if (bookingCache[dk] === undefined) bookingCache[dk] = all[dk];
-        });
     }
 
     async function getAllBookingDates() {
@@ -273,7 +263,7 @@
 
     async function writeSlots(date, room, startIdx, endIdx, seriesId, booker, subject, start, end) {
         var dk = dbKey(date), rk = rKey(room);
-        var bid = seriesId+'-'+dk;
+        var bid = seriesId+'-'+dk;  // 統一用 8 碼數字格式
         var entry = { id:bid, seriesId:seriesId, booker:booker, subject:subject, fullRange:start+" - "+end };
         for (var k = startIdx; k < endIdx; k++) {
             await set(ref(db, 'bookings/'+dk+'/'+rk+'/'+allSlots[k]), entry);
@@ -296,9 +286,15 @@
 
     async function deleteById(date, room, id) {
         var dk = dbKey(date), rk = rKey(room);
-        var roomData = (bookingCache[dk] && bookingCache[dk][rk]) ? Object.assign({}, bookingCache[dk][rk]) : {};
+        // 相容新舊兩種 id 格式：seriesId-YYYYMMDD 和 seriesId-YYYY-MM-DD
+        var altId = id.replace(/-(\d{4})-(\d{2})-(\d{2})$/, '-$1$2$3')
+                      .replace(/-(\d{8})$/, function(m, p1) { return '-'+p1.slice(0,4)+'-'+p1.slice(4,6)+'-'+p1.slice(6,8); });
+        var snap = await get(child(ref(db), 'bookings/'+dk+'/'+rk));
+        if (!snap.exists()) return;
+        var roomData = snap.val();
         for (var s in roomData) {
-            if (roomData[s] && roomData[s].id === id) {
+            var bid = roomData[s] && roomData[s].id;
+            if (bid === id || bid === altId) {
                 await remove(ref(db, 'bookings/'+dk+'/'+rk+'/'+s));
                 if (bookingCache[dk] && bookingCache[dk][rk]) delete bookingCache[dk][rk][s];
             }
@@ -329,7 +325,9 @@
     window.renderAll = async function() {
         var date = document.getElementById('booking-date').value;
         showLoading();
-        await loadAllBookings();
+        var dk = dbKey(date);
+        var snap = await get(child(ref(db), 'bookings/'+dk));
+        bookingCache[dk] = snap.exists() ? snap.val() : {};
         hideLoading();
         renderTable();
         renderActivityLog();
@@ -577,7 +575,7 @@
         renderTable(); renderActivityLog();
     }
 
-    function renderActivityLog() {
+    async function renderActivityLog() {
         var date = document.getElementById('booking-date').value;
         var dk = dbKey(date);
         var list = document.getElementById('log-list');
@@ -598,11 +596,11 @@
         }
         if (daily.length===0) { list.innerHTML="<li><span class='empty-log'>本日尚無預約。</span></li>"; return; }
         daily.sort(function(a,b){ return a.range.localeCompare(b.range); });
-        daily.forEach(function(l) {
+        daily.forEach(async function(l) {
+            var recurring = await isRecurring(l.seriesId);
             var repeatTag = '';
-            if (isRecurring(l.seriesId)) {
-                var repeatType = seriesRepeatMap[l.seriesId];
-                var label = repeatType === 'biweekly' ? '每雙週' : '每週';
+            if (recurring) {
+                var label = (seriesRepeatMap[l.seriesId] === 'biweekly') ? '每雙週' : '每週';
                 repeatTag = '<span class="log-repeat">'+label+'</span>';
             }
             list.innerHTML += '<li><span class="log-time">'+l.range+'</span><span class="log-room">'+l.room+'</span> 由 <strong>'+l.booker+'</strong> 預約：'+l.subject+repeatTag+'</li>';
