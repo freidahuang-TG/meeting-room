@@ -3,12 +3,15 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>研發處會議室預約版</title>
+    <title>研究發展處會議室線上預約</title>
     <style>
         :root { --header-bg: #34495e; --booked-bg: #e74c3c; --booked-hover-bg: #c0392b; --main-font-color: #333; --border-color: #ddd; }
         body { font-family: "Microsoft JhengHei", "Segoe UI", sans-serif; background-color: #f0f2f5; margin: 0; padding: 20px; color: var(--main-font-color); }
         .container { max-width: 1450px; margin: 0 auto; background: #fff; padding: 30px; border-radius: 12px; box-shadow: 0 5px 20px rgba(0,0,0,0.08); }
-        h2, h3 { text-align: center; color: #2c3e50; margin-bottom: 25px; }
+        .title-block { text-align: center; margin-bottom: 25px; }
+        .title-block .title-dept { font-size: 18px; color: #7f8c8d; font-weight: 500; margin: 0; }
+        .title-block .title-main { font-size: 26px; color: #2c3e50; font-weight: bold; margin: 4px 0 0; }
+        h3 { text-align: center; color: #2c3e50; margin-bottom: 25px; }
         .date-picker { text-align: center; margin-bottom: 25px; }
         .date-picker input { padding: 10px 15px; font-size: 16px; border-radius: 6px; border: 1px solid var(--border-color); cursor: pointer; }
         .table-wrapper { overflow-x: auto; }
@@ -46,6 +49,7 @@
         #activity-log li { background: #fff; margin-bottom: 12px; padding: 15px; border-left: 5px solid #3498db; border-radius: 5px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
         .log-time { font-weight: bold; color: #e67e22; margin-right: 10px; }
         .log-room { font-weight: bold; color: #2980b9; margin-right: 10px; }
+        .log-repeat { font-size: 12px; color: #fff; background: #8e44ad; border-radius: 3px; padding: 2px 6px; margin-left: 6px; }
         .empty-log { color: #7f8c8d; font-style: italic; }
         .divider { border-top: 1px dashed #ccc; margin: 20px 0; }
         #delete-panel { display: none; }
@@ -59,7 +63,10 @@
 <div id="loading-overlay">資料處理中，請稍候⋯</div>
 
 <div class="container">
-    <h2>研發處會議室預約版</h2>
+    <div class="title-block">
+        <p class="title-dept">研究發展處</p>
+        <p class="title-main">會議室線上預約</p>
+    </div>
     <div class="date-picker">
         <label for="booking-date">查詢日期：</label>
         <input type="date" id="booking-date" onchange="renderAll()">
@@ -182,22 +189,43 @@
     }
     var bookingCache = {};
 
+    // seriesId -> repeat type 的暫存，新增/修改時記錄，用於今日動態標註
+    var seriesRepeatMap = {};
+
     function showLoading() { document.getElementById('loading-overlay').style.display = 'flex'; }
     function hideLoading() { document.getElementById('loading-overlay').style.display = 'none'; }
-
-    // Firebase 的 key：日期去掉連字號，會議室的點和空格換成底線
     function dbKey(date) { return date.replace(/-/g,''); }
     function rKey(room) { return room.replace(/[\.\s]/g,'_'); }
-
-    // dbKey 轉回日期字串（用於比較大小）
-    function dbKeyToDate(dk) {
-        return dk.slice(0,4)+'-'+dk.slice(4,6)+'-'+dk.slice(6,8);
-    }
+    function dbKeyToDate(dk) { return dk.slice(0,4)+'-'+dk.slice(4,6)+'-'+dk.slice(6,8); }
 
     function getBooking(date, room, slot) {
         var dk = dbKey(date), rk = rKey(room);
         if (bookingCache[dk] && bookingCache[dk][rk]) return bookingCache[dk][rk][slot] || null;
         return null;
+    }
+
+    // 判斷某 seriesId 是否為週期性（同 seriesId 出現在多個日期）
+    function isRecurring(seriesId) {
+        var count = 0;
+        var dks = Object.keys(bookingCache);
+        for (var i = 0; i < dks.length; i++) {
+            var dk = dks[i];
+            var dateData = bookingCache[dk];
+            if (!dateData) continue;
+            var rks = Object.keys(dateData);
+            for (var j = 0; j < rks.length; j++) {
+                var slots = dateData[rks[j]];
+                if (!slots) continue;
+                var slotKeys = Object.keys(slots);
+                for (var k = 0; k < slotKeys.length; k++) {
+                    var b = slots[slotKeys[k]];
+                    if (b && b.seriesId === seriesId) { count++; if (count > 1) return true; break; }
+                }
+                if (count > 1) break;
+            }
+            if (count > 1) break;
+        }
+        return false;
     }
 
     async function loadDate(date) {
@@ -207,14 +235,12 @@
         bookingCache[dk] = snap.exists() ? snap.val() : {};
     }
 
-    // 從 Firebase 撈出所有日期的 key 清單
     async function getAllBookingDates() {
         var snap = await get(child(ref(db), 'bookings'));
         if (!snap.exists()) return [];
         return Object.keys(snap.val()).sort();
     }
 
-    // 找出某 seriesId 從指定日期起的所有日期（直接掃 Firebase，不依賴 series 索引）
     async function getSeriesDatesFrom(seriesId, fromDate, room) {
         var allDks = await getAllBookingDates();
         var rk = rKey(room);
@@ -223,12 +249,10 @@
             var dk = allDks[i];
             var d = dbKeyToDate(dk);
             if (d < fromDate) continue;
-            // 確保該日期的資料已載入
             if (bookingCache[dk] === undefined) {
                 var snap = await get(child(ref(db), 'bookings/'+dk));
                 bookingCache[dk] = snap.exists() ? snap.val() : {};
             }
-            // 檢查此日期此會議室是否有此 seriesId
             var roomData = bookingCache[dk][rk] || {};
             var found = Object.values(roomData).some(function(b){ return b && b.seriesId === seriesId; });
             if (found) result.push(d);
@@ -377,6 +401,8 @@
 
         var skipped = [], booked = [];
         var seriesId = Date.now().toString();
+        if (repeat !== 'none') seriesRepeatMap[seriesId] = repeat;
+
         for (var i = 0; i < dates.length; i++) {
             if (checkConflict(dates[i], room, startIdx, endIdx)) {
                 skipped.push(dates[i]);
@@ -461,20 +487,16 @@
         showLoading();
 
         if (scope === 'series') {
-            // 直接掃 Firebase 找出此 seriesId 從此日期起的所有日期
             var seriesDates = await getSeriesDatesFrom(seriesId, baseDateStr, room);
+            for (var i = 0; i < seriesDates.length; i++) await deleteBySeriesId(seriesDates[i], room, seriesId);
 
-            // 清掉所有舊資料
-            for (var i = 0; i < seriesDates.length; i++) {
-                await deleteBySeriesId(seriesDates[i], room, seriesId);
-            }
-
-            // 產生新日期清單，載入並寫入
             var datesToWrite = generateDates(baseDateStr, repeat, repeatEndStr);
             for (var i = 0; i < datesToWrite.length; i++) await loadDate(datesToWrite[i]);
 
             var skipped = [], written = [];
             var newSeriesId = Date.now().toString();
+            if (repeat !== 'none') seriesRepeatMap[newSeriesId] = repeat;
+
             for (var i = 0; i < datesToWrite.length; i++) {
                 if (checkConflict(datesToWrite[i], room, startIdx, endIdx)) {
                     skipped.push(datesToWrite[i]);
@@ -483,20 +505,19 @@
                     written.push(datesToWrite[i]);
                 }
             }
-
             hideLoading();
             var msg = "修改完成！成功更新 "+written.length+" 筆。";
             if (skipped.length > 0) msg += "\n\n以下日期因衝突未寫入，請另找會議室：\n"+skipped.join("\n");
             alert(msg);
-
         } else {
-            // 單次修改
             await deleteById(baseDateStr, room, id);
             var datesToWrite = generateDates(baseDateStr, repeat, repeatEndStr);
             for (var i = 0; i < datesToWrite.length; i++) await loadDate(datesToWrite[i]);
 
             var skipped = [], written = [];
             var newSeriesId = Date.now().toString();
+            if (repeat !== 'none') seriesRepeatMap[newSeriesId] = repeat;
+
             for (var i = 0; i < datesToWrite.length; i++) {
                 if (checkConflict(datesToWrite[i], room, startIdx, endIdx)) {
                     skipped.push(datesToWrite[i]);
@@ -505,7 +526,6 @@
                     written.push(datesToWrite[i]);
                 }
             }
-
             hideLoading();
             var msg = "修改完成！成功更新 "+written.length+" 筆。";
             if (skipped.length > 0) msg += "\n\n以下日期因衝突未寫入，請另找會議室：\n"+skipped.join("\n");
@@ -533,11 +553,8 @@
 
         showLoading();
         if (mode === 'series') {
-            // 直接掃 Firebase 找出所有屬於此 seriesId 的日期
             var seriesDates = await getSeriesDatesFrom(seriesId, date, room);
-            for (var i = 0; i < seriesDates.length; i++) {
-                await deleteBySeriesId(seriesDates[i], room, seriesId);
-            }
+            for (var i = 0; i < seriesDates.length; i++) await deleteBySeriesId(seriesDates[i], room, seriesId);
             hideLoading();
             alert("已刪除此次及之後所有週期預約，共 "+seriesDates.length+" 筆。");
         } else {
@@ -562,7 +579,7 @@
                 allSlots.forEach(function(s) {
                     var b = bookingCache[dk][rk][s];
                     if (b && ids.indexOf(b.id)===-1) {
-                        daily.push({ room:r, range:b.fullRange, booker:b.booker, subject:b.subject });
+                        daily.push({ room:r, range:b.fullRange, booker:b.booker, subject:b.subject, seriesId:b.seriesId });
                         ids.push(b.id);
                     }
                 });
@@ -571,7 +588,13 @@
         if (daily.length===0) { list.innerHTML="<li><span class='empty-log'>本日尚無預約。</span></li>"; return; }
         daily.sort(function(a,b){ return a.range.localeCompare(b.range); });
         daily.forEach(function(l) {
-            list.innerHTML += '<li><span class="log-time">'+l.range+'</span><span class="log-room">'+l.room+'</span> 由 <strong>'+l.booker+'</strong> 預約：'+l.subject+'</li>';
+            var repeatTag = '';
+            if (isRecurring(l.seriesId)) {
+                var repeatType = seriesRepeatMap[l.seriesId];
+                var label = repeatType === 'biweekly' ? '每雙週' : '每週';
+                repeatTag = '<span class="log-repeat">'+label+'</span>';
+            }
+            list.innerHTML += '<li><span class="log-time">'+l.range+'</span><span class="log-room">'+l.room+'</span> 由 <strong>'+l.booker+'</strong> 預約：'+l.subject+repeatTag+'</li>';
         });
     }
 
