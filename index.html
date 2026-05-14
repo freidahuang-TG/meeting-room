@@ -613,9 +613,29 @@
 
     window.closeModal = function(id) { document.getElementById(id).style.display = "none"; }
 
+    // 每月5號開網頁時，自動清除當月以前的所有資料
+    async function autoCleanOldData() {
+        var now = new Date();
+        if (now.getDate() < 5) return;
+        var cutoff = now.getFullYear()+String(now.getMonth()+1).padStart(2,'0')+'01';
+        try {
+            var snap = await get(child(ref(db), 'bookings'));
+            if (!snap.exists()) return;
+            var allDks = Object.keys(snap.val());
+            for (var i = 0; i < allDks.length; i++) {
+                if (allDks[i] < cutoff) {
+                    await remove(ref(db, 'bookings/'+allDks[i]));
+                    console.log('auto cleaned:', allDks[i]);
+                }
+            }
+        } catch(e) {
+            console.log('autoClean error:', e);
+        }
+    }
+
     var today = new Date();
     document.getElementById('booking-date').value = today.getFullYear()+"-"+String(today.getMonth()+1).padStart(2,'0')+"-"+String(today.getDate()).padStart(2,'0');
-    renderAll();
+    autoCleanOldData().then(function(){ renderAll(); });
 </script>
 </body>
 </html>
