@@ -519,19 +519,21 @@
             if (skipped.length > 0) msg += "\n\n以下日期因衝突未寫入，請另找會議室：\n"+skipped.join("\n");
             alert(msg);
         } else {
+            // 單次修改：先刪舊資料，保留原 seriesId，不斷開與週期的連結
             await deleteById(baseDateStr, room, id);
             var datesToWrite = generateDates(baseDateStr, repeat, repeatEndStr);
             for (var i = 0; i < datesToWrite.length; i++) await loadDate(datesToWrite[i]);
 
             var skipped = [], written = [];
-            var newSeriesId = Date.now().toString();
-            if (repeat !== 'none') seriesRepeatMap[newSeriesId] = repeat;
+            // 保留原 seriesId，讓這筆資料仍屬於原週期
+            var useSeriesId = seriesId;
+            if (repeat !== 'none') seriesRepeatMap[useSeriesId] = repeat;
 
             for (var i = 0; i < datesToWrite.length; i++) {
                 if (checkConflict(datesToWrite[i], room, startIdx, endIdx)) {
                     skipped.push(datesToWrite[i]);
                 } else {
-                    await writeSlots(datesToWrite[i], room, startIdx, endIdx, newSeriesId, booker, subject, newStart, newEnd);
+                    await writeSlots(datesToWrite[i], room, startIdx, endIdx, useSeriesId, booker, subject, newStart, newEnd);
                     written.push(datesToWrite[i]);
                 }
             }
@@ -596,7 +598,9 @@
         }
         if (daily.length===0) { list.innerHTML="<li><span class='empty-log'>本日尚無預約。</span></li>"; return; }
         daily.sort(function(a,b){ return a.range.localeCompare(b.range); });
-        daily.forEach(async function(l) {
+        list.innerHTML = "";
+        for (var i = 0; i < daily.length; i++) {
+            var l = daily[i];
             var recurring = await isRecurring(l.seriesId);
             var repeatTag = '';
             if (recurring) {
@@ -604,7 +608,7 @@
                 repeatTag = '<span class="log-repeat">'+label+'</span>';
             }
             list.innerHTML += '<li><span class="log-time">'+l.range+'</span><span class="log-room">'+l.room+'</span> 由 <strong>'+l.booker+'</strong> 預約：'+l.subject+repeatTag+'</li>';
-        });
+        }
     }
 
     window.closeModal = function(id) { document.getElementById(id).style.display = "none"; }
