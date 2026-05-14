@@ -184,8 +184,15 @@
 
     function showLoading() { document.getElementById('loading-overlay').style.display = 'flex'; }
     function hideLoading() { document.getElementById('loading-overlay').style.display = 'none'; }
+
+    // Firebase 的 key：日期去掉連字號，會議室的點和空格換成底線
     function dbKey(date) { return date.replace(/-/g,''); }
     function rKey(room) { return room.replace(/[\.\s]/g,'_'); }
+
+    // dbKey 轉回日期字串（用於比較大小）
+    function dbKeyToDate(dk) {
+        return dk.slice(0,4)+'-'+dk.slice(4,6)+'-'+dk.slice(6,8);
+    }
 
     function getBooking(date, room, slot) {
         var dk = dbKey(date), rk = rKey(room);
@@ -195,27 +202,38 @@
 
     async function loadDate(date) {
         var dk = dbKey(date);
-        if (bookingCache[dk]) return;
+        if (bookingCache[dk] !== undefined) return;
         var snap = await get(child(ref(db), 'bookings/'+dk));
         bookingCache[dk] = snap.exists() ? snap.val() : {};
     }
 
-    // 取得某 seriesId 從指定日期起的所有日期（從 Firebase series 節點）
-    async function getSeriesDatesFrom(seriesId, fromDate) {
-        var snap = await get(child(ref(db), 'series/'+seriesId+'/dates'));
+    // 從 Firebase 撈出所有日期的 key 清單
+    async function getAllBookingDates() {
+        var snap = await get(child(ref(db), 'bookings'));
         if (!snap.exists()) return [];
-        var allDates = snap.val();
-        return allDates.filter(function(d){ return d >= fromDate; });
+        return Object.keys(snap.val()).sort();
     }
 
-    // 寫入 series 索引
-    async function writeSeriesIndex(seriesId, room, dates) {
-        await set(ref(db, 'series/'+seriesId), { room: rKey(room), dates: dates });
-    }
-
-    // 刪除 series 索引
-    async function removeSeriesIndex(seriesId) {
-        await remove(ref(db, 'series/'+seriesId));
+    // 找出某 seriesId 從指定日期起的所有日期（直接掃 Firebase，不依賴 series 索引）
+    async function getSeriesDatesFrom(seriesId, fromDate, room) {
+        var allDks = await getAllBookingDates();
+        var rk = rKey(room);
+        var result = [];
+        for (var i = 0; i < allDks.length; i++) {
+            var dk = allDks[i];
+            var d = dbKeyToDate(dk);
+            if (d < fromDate) continue;
+            // 確保該日期的資料已載入
+            if (bookingCache[dk] === undefined) {
+                var snap = await get(child(ref(db), 'bookings/'+dk));
+                bookingCache[dk] = snap.exists() ? snap.val() : {};
+            }
+            // 檢查此日期此會議室是否有此 seriesId
+            var roomData = bookingCache[dk][rk] || {};
+            var found = Object.values(roomData).some(function(b){ return b && b.seriesId === seriesId; });
+            if (found) result.push(d);
+        }
+        return result;
     }
 
     async function writeSlots(date, room, startIdx, endIdx, seriesId, booker, subject, start, end) {
@@ -230,13 +248,25 @@
         }
     }
 
-    async function deleteSlots(date, room, filterFn) {
+    async function deleteBySeriesId(date, room, seriesId) {
         var dk = dbKey(date), rk = rKey(room);
-        if (!bookingCache[dk] || !bookingCache[dk][rk]) return;
-        var slots = Object.keys(bookingCache[dk][rk]).filter(function(s){ return filterFn(bookingCache[dk][rk][s]); });
-        for (var i = 0; i < slots.length; i++) {
-            await remove(ref(db, 'bookings/'+dk+'/'+rk+'/'+slots[i]));
-            delete bookingCache[dk][rk][slots[i]];
+        var roomData = (bookingCache[dk] && bookingCache[dk][rk]) ? Object.assign({}, bookingCache[dk][rk]) : {};
+        for (var s in roomData) {
+            if (roomData[s] && roomData[s].seriesId === seriesId) {
+                await remove(ref(db, 'bookings/'+dk+'/'+rk+'/'+s));
+                if (bookingCache[dk] && bookingCache[dk][rk]) delete bookingCache[dk][rk][s];
+            }
+        }
+    }
+
+    async function deleteById(date, room, id) {
+        var dk = dbKey(date), rk = rKey(room);
+        var roomData = (bookingCache[dk] && bookingCache[dk][rk]) ? Object.assign({}, bookingCache[dk][rk]) : {};
+        for (var s in roomData) {
+            if (roomData[s] && roomData[s].id === id) {
+                await remove(ref(db, 'bookings/'+dk+'/'+rk+'/'+s));
+                if (bookingCache[dk] && bookingCache[dk][rk]) delete bookingCache[dk][rk][s];
+            }
         }
     }
 
@@ -252,7 +282,7 @@
         if (repeatType !== 'none' && repeatEndStr) {
             var curr = new Date(baseDateStr+'T00:00:00');
             var end = new Date(repeatEndStr+'T00:00:00');
-            var step = (repeatType === 'weekly') ? 7 : 14;
+            var step = repeatType==='weekly' ? 7 : 14;
             while (curr <= end) {
                 dates.push(curr.getFullYear()+"-"+String(curr.getMonth()+1).padStart(2,'0')+"-"+String(curr.getDate()).padStart(2,'0'));
                 curr.setDate(curr.getDate()+step);
@@ -343,12 +373,10 @@
         var dates = generateDates(baseDateStr, repeat, repeatEndStr);
 
         showLoading();
-        // 載入所有目標日期資料
         for (var i = 0; i < dates.length; i++) await loadDate(dates[i]);
 
         var skipped = [], booked = [];
         var seriesId = Date.now().toString();
-
         for (var i = 0; i < dates.length; i++) {
             if (checkConflict(dates[i], room, startIdx, endIdx)) {
                 skipped.push(dates[i]);
@@ -358,17 +386,10 @@
             }
         }
 
-        // 寫入 series 索引（只記錄成功建立的日期）
-        if (booked.length > 0 && repeat !== 'none') {
-            await writeSeriesIndex(seriesId, room, booked);
-        }
-
         hideLoading();
-
         var msg = "預約完成！成功建立 "+booked.length+" 筆。";
         if (skipped.length > 0) msg += "\n\n以下日期因衝突未建立，請另找會議室：\n"+skipped.join("\n");
         alert(msg);
-
         closeModal('booking-modal');
         renderTable(); renderActivityLog();
     }
@@ -440,20 +461,15 @@
         showLoading();
 
         if (scope === 'series') {
-            // 從 Firebase series 索引取得完整日期清單
-            var seriesDates = await getSeriesDatesFrom(seriesId, baseDateStr);
+            // 直接掃 Firebase 找出此 seriesId 從此日期起的所有日期
+            var seriesDates = await getSeriesDatesFrom(seriesId, baseDateStr, room);
 
-            // 載入所有涉及日期的資料到 cache
-            for (var i = 0; i < seriesDates.length; i++) await loadDate(seriesDates[i]);
-
-            // 先清掉舊資料
+            // 清掉所有舊資料
             for (var i = 0; i < seriesDates.length; i++) {
-                await deleteSlots(seriesDates[i], room, function(b){ return b && b.seriesId===seriesId; });
+                await deleteBySeriesId(seriesDates[i], room, seriesId);
             }
-            // 清掉舊 series 索引
-            await removeSeriesIndex(seriesId);
 
-            // 產生新目標日期
+            // 產生新日期清單，載入並寫入
             var datesToWrite = generateDates(baseDateStr, repeat, repeatEndStr);
             for (var i = 0; i < datesToWrite.length; i++) await loadDate(datesToWrite[i]);
 
@@ -467,7 +483,6 @@
                     written.push(datesToWrite[i]);
                 }
             }
-            if (written.length > 0 && repeat !== 'none') await writeSeriesIndex(newSeriesId, room, written);
 
             hideLoading();
             var msg = "修改完成！成功更新 "+written.length+" 筆。";
@@ -476,12 +491,12 @@
 
         } else {
             // 單次修改
-            await deleteSlots(baseDateStr, room, function(b){ return b && b.id===id; });
-            var newSeriesId = Date.now().toString();
+            await deleteById(baseDateStr, room, id);
             var datesToWrite = generateDates(baseDateStr, repeat, repeatEndStr);
             for (var i = 0; i < datesToWrite.length; i++) await loadDate(datesToWrite[i]);
 
             var skipped = [], written = [];
+            var newSeriesId = Date.now().toString();
             for (var i = 0; i < datesToWrite.length; i++) {
                 if (checkConflict(datesToWrite[i], room, startIdx, endIdx)) {
                     skipped.push(datesToWrite[i]);
@@ -490,7 +505,6 @@
                     written.push(datesToWrite[i]);
                 }
             }
-            if (written.length > 0 && repeat !== 'none') await writeSeriesIndex(newSeriesId, room, written);
 
             hideLoading();
             var msg = "修改完成！成功更新 "+written.length+" 筆。";
@@ -519,19 +533,18 @@
 
         showLoading();
         if (mode === 'series') {
-            // 從 Firebase series 索引取得完整日期清單
-            var seriesDates = await getSeriesDatesFrom(seriesId, date);
+            // 直接掃 Firebase 找出所有屬於此 seriesId 的日期
+            var seriesDates = await getSeriesDatesFrom(seriesId, date, room);
             for (var i = 0; i < seriesDates.length; i++) {
-                await loadDate(seriesDates[i]);
-                await deleteSlots(seriesDates[i], room, function(b){ return b && b.seriesId===seriesId; });
+                await deleteBySeriesId(seriesDates[i], room, seriesId);
             }
-            await removeSeriesIndex(seriesId);
-            alert("已刪除此次及之後所有週期預約。");
+            hideLoading();
+            alert("已刪除此次及之後所有週期預約，共 "+seriesDates.length+" 筆。");
         } else {
-            await deleteSlots(date, room, function(b){ return b && b.id===id; });
+            await deleteById(date, room, id);
+            hideLoading();
             alert("已刪除此單次預約。");
         }
-        hideLoading();
         closeModal('manage-modal');
         renderTable(); renderActivityLog();
     }
@@ -564,7 +577,6 @@
 
     window.closeModal = function(id) { document.getElementById(id).style.display = "none"; }
 
-    // 初始化
     var today = new Date();
     document.getElementById('booking-date').value = today.getFullYear()+"-"+String(today.getMonth()+1).padStart(2,'0')+"-"+String(today.getDate()).padStart(2,'0');
     renderAll();
