@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>研發處會議室預約版</title>
+    <style>
+        :root {
+            --header-bg: #34495e; --booked-bg: #e74c3c; --booked-hover-bg: #c0392b;
+            --main-font-color: #333; --border-color: #ddd;
+        }
+        body { font-family: "Microsoft JhengHei", "Segoe UI", sans-serif; background-color: #f0f2f5; margin: 0; padding: 20px; color: var(--main-font-color); }
+        .container { max-width: 1450px; margin: 0 auto; background: #fff; padding: 30px; border-radius: 12px; box-shadow: 0 5px 20px rgba(0,0,0,0.08); }
+        h2, h3 { text-align: center; color: #2c3e50; margin-bottom: 25px; }
+        .date-picker { text-align: center; margin-bottom: 25px; }
+        .date-picker input { padding: 10px 15px; font-size: 16px; border-radius: 6px; border: 1px solid var(--border-color); cursor: pointer; }
+        .table-wrapper { overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; min-width: 1200px; table-layout: fixed; }
+        th, td { border: 1px solid var(--border-color); text-align: center; position: relative; height: 70px; padding: 0; }
+        th { background: var(--header-bg); color: white; height: 50px; font-weight: 500; font-size: 15px; }
+        .room-col { width: 130px; font-weight: bold; font-size: 16px; color: #2980b9; background: #fafafa; }
+        .status-available { color: #ccc; cursor: pointer; font-size: 12px; transition: background-color 0.2s; }
+        .status-available:hover { background-color: #e8f5e9; color: #27ae60; font-weight: bold; }
+        .status-available:hover::after { content: '預約'; }
+        .status-booked { background-color: var(--booked-bg); color: white; cursor: pointer; transition: background-color 0.2s; overflow: hidden; text-align: left; }
+        .status-booked:hover { background-color: var(--booked-hover-bg); }
+        .booked-content { padding: 8px 12px; pointer-events: none; }
+        .booked-booker { font-weight: bold; font-size: 14px; display: block; margin-bottom: 2px; }
+        .booked-subject { font-size: 12px; opacity: 0.9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
+        .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); align-items: center; justify-content: center; backdrop-filter: blur(3px); }
+        .modal-content { background: #fff; padding: 25px 35px; border-radius: 10px; width: 90%; max-width: 450px; box-shadow: 0 5px 25px rgba(0,0,0,0.3); animation: slide-down 0.3s ease-out; max-height: 90vh; overflow-y: auto; }
+        @keyframes slide-down { from { transform: translateY(-30px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+        .form-group { margin-bottom: 15px; }
+        .form-group label { display: block; margin-bottom: 6px; font-weight: 600; color: #555; }
+        .form-group input, .form-group select { width: 100%; padding: 10px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 5px; font-size: 15px; }
+        .form-group input[readonly] { background-color: #f2f2f2; color: #777; }
+        .btn { width: 100%; padding: 12px; border: none; border-radius: 5px; font-weight: bold; cursor: pointer; font-size: 16px; transition: 0.2s; margin-bottom: 10px; }
+        .btn-blue { background-color: #3498db; color: white; }
+        .btn-blue:hover { background-color: #2980b9; }
+        .btn-red { background-color: #e74c3c; color: white; }
+        .btn-red:hover { background-color: #c0392b; }
+        .btn-orange { background-color: #e67e22; color: white; }
+        .btn-orange:hover { background-color: #ca6f1e; }
+        .btn-cancel { background-color: #ecf0f1; color: #7f8c8d; }
+        .btn-cancel:hover { background-color: #bdc3c7; color: #fff; }
+        .manage-info-box { background: #f8f9fa; padding: 12px; border-radius: 5px; margin-bottom: 15px; font-size: 15px; line-height: 1.5; }
+        #activity-log { margin-top: 40px; padding: 25px; background: #f8f9fa; border-radius: 10px; }
+        #activity-log ul { list-style: none; padding: 0; margin: 0; }
+        #activity-log li { background: #fff; margin-bottom: 12px; padding: 15px; border-left: 5px solid #3498db; border-radius: 5px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+        .log-time { font-weight: bold; color: #e67e22; margin-right: 10px; }
+        .log-room { font-weight: bold; color: #2980b9; margin-right: 10px; }
+        .empty-log { color: #7f8c8d; font-style: italic; }
+        .divider { border-top: 1px dashed #ccc; margin: 20px 0; }
+        #delete-panel { display: none; }
+        #delete-panel .delete-title { font-size: 15px; font-weight: 600; color: #c0392b; margin-bottom: 12px; }
+        #delete-panel .delete-desc { font-size: 13px; color: #666; margin-bottom: 15px; line-height: 1.6; }
+        #loading-overlay { display:none; position:fixed; z-index:2000; left:0; top:0; width:100%; height:100%; background:rgba(255,255,255,0.75); align-items:center; justify-content:center; font-size:18px; color:#2c3e50; }
+    </style>
+</head>
+<body>
+
+<div id="loading-overlay">資料載入中，請稍候⋯</div>
+
+<div class="container">
+    <h2>研發處會議室預約版</h2>
+    <div class="date-picker">
+        <label for="booking-date">查詢日期：</label>
+        <input type="date" id="booking-date" onchange="renderAll()">
+    </div>
+    <div class="table-wrapper">
+        <table id="main-table">
+            <thead>
+                <tr>
+                    <th class="room-col">會議室</th>
+                    <th colspan="2">08:00</th><th colspan="2">09:00</th><th colspan="2">10:00</th><th colspan="2">11:00</th>
+                    <th colspan="2">12:00</th><th colspan="2">13:00</th><th colspan="2">14:00</th><th colspan="2">15:00</th>
+                    <th colspan="2">16:00</th><th colspan="2">17:00</th>
+                </tr>
+            </thead>
+            <tbody id="table-body"></tbody>
+        </table>
+    </div>
+    <div id="activity-log">
+        <h3>今日預約動態</h3>
+        <ul id="log-list"></ul>
+    </div>
+</div>
+
+<!-- 新增預約 Modal -->
+<div id="booking-modal" class="modal">
+    <div class="modal-content">
+        <h3 style="margin-top:0; text-align:left; color:#2c3e50;">新增預約</h3>
+        <form id="booking-form" onsubmit="handleBookingSubmit(event)">
+            <div class="form-group"><label>會議室</label><input type="text" id="modal-room" readonly></div>
+            <div class="form-group"><label>開始時間</label><input type="text" id="modal-start-time" readonly></div>
+            <div class="form-group"><label>結束時間 (半小時級距)</label><select id="modal-end-time" required></select></div>
+            <div class="divider"></div>
+            <div class="form-group">
+                <label>重複週期 (固定會議)</label>
+                <select id="modal-repeat" onchange="toggleRepeatDate('modal-repeat','repeat-end-group','modal-repeat-end')">
+                    <option value="none">不重複 (單次)</option>
+                    <option value="weekly">每週重複</option>
+                    <option value="biweekly">每雙週重複</option>
+                </select>
+            </div>
+            <div class="form-group" id="repeat-end-group" style="display:none;">
+                <label>重複結束日期</label>
+                <input type="date" id="modal-repeat-end">
+            </div>
+            <div class="divider"></div>
+            <div class="form-group"><label>預約者</label><input type="text" id="modal-booker" placeholder="例如：Freida" required></div>
+            <div class="form-group"><label>會議內容</label><input type="text" id="modal-subject" placeholder="例如：專案進度同步" required></div>
+            <button type="submit" class="btn btn-blue">確認預約</button>
+            <button type="button" class="btn btn-cancel" onclick="closeModal('booking-modal')">取消</button>
+        </form>
+    </div>
+</div>
+
+<!-- 管理預約 Modal -->
+<div id="manage-modal" class="modal">
+    <div class="modal-content">
+        <h3 style="margin-top:0; text-align:left; color:#2c3e50;">管理預約</h3>
+        <div class="manage-info-box">
+            <strong>日期：</strong><span id="manage-date-display"></span><br>
+            <strong>會議室：</strong><span id="manage-room-display"></span>
+        </div>
+        <div id="manage-main-panel">
+            <form id="manage-form" onsubmit="handleEditSubmit(event)">
+                <input type="hidden" id="manage-booking-id">
+                <input type="hidden" id="manage-series-id">
+                <input type="hidden" id="manage-date">
+                <div class="form-group"><label>開始時間</label><select id="manage-start-time" onchange="updateManageEndTime()"></select></div>
+                <div class="form-group"><label>結束時間</label><select id="manage-end-time" required></select></div>
+                <div class="divider"></div>
+                <div class="form-group">
+                    <label>修改範圍</label>
+                    <select id="manage-scope">
+                        <option value="single">僅修改此單次</option>
+                        <option value="series">修改此次及之後所有週期</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>新的重複週期</label>
+                    <select id="manage-repeat" onchange="toggleRepeatDate('manage-repeat','manage-repeat-end-group','manage-repeat-end')">
+                        <option value="none">不重複 (僅單次)</option>
+                        <option value="weekly">每週重複</option>
+                        <option value="biweekly">每雙週重複</option>
+                    </select>
+                </div>
+                <div class="form-group" id="manage-repeat-end-group" style="display:none;">
+                    <label>重複結束日期</label>
+                    <input type="date" id="manage-repeat-end">
+                </div>
+                <div class="divider"></div>
+                <div class="form-group"><label>預約者</label><input type="text" id="manage-booker" required></div>
+                <div class="form-group"><label>會議內容</label><input type="text" id="manage-subject" required></div>
+                <button type="submit" class="btn btn-blue">儲存修改</button>
+                <button type="button" class="btn btn-red" onclick="showDeletePanel()">取消預約</button>
+                <button type="button" class="btn btn-cancel" onclick="closeModal('manage-modal')">關閉（不做任何變更）</button>
+            </form>
+        </div>
+        <div id="delete-panel">
+            <div class="delete-title">⚠️ 請確認刪除範圍</div>
+            <div class="delete-desc">請選擇要刪除的範圍。此操作無法復原。</div>
+            <button type="button" class="btn btn-orange" onclick="handleDelete('single')">僅刪除此單次預約</button>
+            <button type="button" class="btn btn-red" onclick="handleDelete('series')">刪除此次及之後所有週期</button>
+            <button type="button" class="btn btn-cancel" onclick="hideDeletePanel()">返回（不刪除）</button>
+        </div>
+    </div>
+</div>
+
+<script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+    import { getDatabase, ref, set, get, remove, child } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+
+    const firebaseConfig = {
+        databaseURL: "https://booking-rd-meeting-room-default-rtdb.firebaseio.com"
+    };
+    const app = initializeApp(firebaseConfig);
+    const db = getDatabase(app);
+
+    var rooms = ["NO.1會議室","NO.2會議室","NO.3會議室","NO.4會議室","NO.5會議室"];
+    var allSlots = [];
+    for (var h = 8; h < 18; h++) {
+        var hh = h.toString().padStart(2,'0');
+        allSlots.push(hh+":00");
+        allSlots.push(hh+":30");
+    }
+    var bookingDatabase = {};
+
+    function showLoading() { document.getElementById('loading-overlay').style.display = 'flex'; }
+    function hideLoading() { document.getElementById('loading-overlay').style.display = 'none'; }
+
+    function dbKey(date) { return date.replace(/-/g,''); }
+
+    function roomKey(room) { return room.replace(/\./g,'_').replace(/\s/g,'_'); }
+
+    function getBooking(date, room, slot) {
+        if (bookingDatabase[date] && bookingDatabase[date][roomKey(room)]) return bookingDatabase[date][roomKey(room)][slot];
+        return null;
+    }
+
+    async function loadDateData(date) {
+        showLoading();
+        try {
+            var snap = await get(child(ref(db), 'bookings/'+dbKey(date)));
+            bookingDatabase[date] = snap.exists() ? snap.val() : {};
+        } catch(e) {
+            alert("資料載入失敗，請確認網路連線。");
+            bookingDatabase[date] = {};
+        }
+        hideLoading();
+    }
+
+    window.renderAll = async function() {
+        var date = document.getElementById('booking-date').value;
+        await loadDateData(date);
+        renderTable();
+        renderActivityLog();
+    }
+
+    function renderTable() {
+        var date = document.getElementById('booking-date').value;
+        var tbody = document.getElementById('table-body');
+        tbody.innerHTML = "";
+        rooms.forEach(function(room) {
+            var tr = document.createElement('tr');
+            tr.innerHTML = '<td class="room-col">'+room+'</td>';
+            var i = 0;
+            while (i < allSlots.length) {
+                var slot = allSlots[i];
+                var booking = getBooking(date, room, slot);
+                var td = document.createElement('td');
+                if (booking) {
+                    var range = booking.fullRange.split(' - ');
+                    var startIdx = allSlots.indexOf(range[0]);
+                    var endIdx = range[1] === "18:00" ? allSlots.length : allSlots.indexOf(range[1]);
+                    var span = endIdx - startIdx;
+                    td.colSpan = span;
+                    td.className = "status-booked";
+                    td.onclick = (function(d,r,id){ return function(){ openManageModal(d,r,id); }; })(date,room,booking.id);
+                    td.innerHTML = '<div class="booked-content"><span class="booked-booker">'+booking.booker+'</span><span class="booked-subject">'+booking.subject+'</span></div>';
+                    tr.appendChild(td);
+                    i += span;
+                } else {
+                    td.className = "status-available";
+                    td.onclick = (function(r,s){ return function(){ openBookingModal(r,s); }; })(room,slot);
+                    tr.appendChild(td);
+                    i++;
+                }
+            }
+            tbody.appendChild(tr);
+        });
+    }
+
+    window.toggleRepeatDate = function(selectId, groupId, inputId) {
+        var val = document.getElementById(selectId).value;
+        var grp = document.getElementById(groupId);
+        var inp = document.getElementById(inputId);
+        if (val === 'none') { grp.style.display='none'; inp.removeAttribute('required'); }
+        else { grp.style.display='block'; inp.setAttribute('required','true'); }
+    }
+
+    window.openBookingModal = function(room, start) {
+        var date = document.getElementById('booking-date').value;
+        document.getElementById('modal-room').value = room;
+        document.getElementById('modal-start-time').value = start;
+        document.getElementById('modal-repeat').value = 'none';
+        toggleRepeatDate('modal-repeat','repeat-end-group','modal-repeat-end');
+        var select = document.getElementById('modal-end-time');
+        select.innerHTML = "";
+        var idx = allSlots.indexOf(start);
+        for (var j = idx+1; j <= allSlots.length; j++) {
+            if (j > idx+1 && getBooking(date, room, allSlots[j-1])) break;
+            var end = (j === allSlots.length) ? "18:00" : allSlots[j];
+            var opt = document.createElement('option');
+            opt.value = end;
+            opt.text = end+" (計 "+((j-idx)*0.5)+" 小時)";
+            select.appendChild(opt);
+        }
+        document.getElementById('booking-modal').style.display = "flex";
+    }
+
+    function generateRepeatDates(baseDateStr, repeatType, repeatEndStr) {
+        var dates = [];
+        if (repeatType !== 'none' && repeatEndStr) {
+            var curr = new Date(baseDateStr+'T00:00:00');
+            var end = new Date(repeatEndStr+'T00:00:00');
+            var step = (repeatType === 'weekly') ? 7 : 14;
+            while (curr <= end) {
+                var y = curr.getFullYear();
+                var m = String(curr.getMonth()+1).padStart(2,'0');
+                var d = String(curr.getDate()).padStart(2,'0');
+                dates.push(y+"-"+m+"-"+d);
+                curr.setDate(curr.getDate()+step);
+            }
+        } else {
+            dates.push(baseDateStr);
+        }
+        return dates;
+    }
+
+    async function writeBookings(dates, room, startIdx, endIdx, seriesId, booker, subject, start, end) {
+        for (var i = 0; i < dates.length; i++) {
+            var d = dates[i];
+            var bid = seriesId+'-'+d;
+            var entry = { id:bid, seriesId:seriesId, booker:booker, subject:subject, fullRange:start+" - "+end };
+            for (var k = startIdx; k < endIdx; k++) {
+                await set(ref(db, 'bookings/'+dbKey(d)+'/'+roomKey(room)+'/'+allSlots[k]), entry);
+                if (!bookingDatabase[d]) bookingDatabase[d] = {};
+                if (!bookingDatabase[d][roomKey(room)]) bookingDatabase[d][roomKey(room)] = {};
+                bookingDatabase[d][roomKey(room)][allSlots[k]] = entry;
+            }
+        }
+    }
+
+    async function deleteSlot(date, room, slot) {
+        await remove(ref(db, 'bookings/'+dbKey(date)+'/'+roomKey(room)+'/'+slot));
+        if (bookingDatabase[date] && bookingDatabase[date][roomKey(room)]) {
+            delete bookingDatabase[date][roomKey(room)][slot];
+        }
+    }
+
+    window.handleBookingSubmit = async function(e) {
+        e.preventDefault();
+        var baseDateStr = document.getElementById('booking-date').value;
+        var room = document.getElementById('modal-room').value;
+        var start = document.getElementById('modal-start-time').value;
+        var end = document.getElementById('modal-end-time').value;
+        var booker = document.getElementById('modal-booker').value;
+        var subject = document.getElementById('modal-subject').value;
+        var repeat = document.getElementById('modal-repeat').value;
+        var repeatEndStr = document.getElementById('modal-repeat-end').value;
+        var startIdx = allSlots.indexOf(start);
+        var endIdx = (end === "18:00") ? allSlots.length : allSlots.indexOf(end);
+        var dates = generateRepeatDates(baseDateStr, repeat, repeatEndStr);
+
+        showLoading();
+        for (var i = 0; i < dates.length; i++) {
+            if (!bookingDatabase[dates[i]]) {
+                var snap = await get(child(ref(db), 'bookings/'+dbKey(dates[i])));
+                bookingDatabase[dates[i]] = snap.exists() ? snap.val() : {};
+            }
+        }
+
+        var conflicts = [];
+        dates.forEach(function(d) {
+            for (var k = startIdx; k < endIdx; k++) {
+                if (getBooking(d, room, allSlots[k])) { conflicts.push(d); break; }
+            }
+        });
+        if (conflicts.length > 0) {
+            hideLoading();
+            alert("預約失敗！以下日期時段已被佔用：\n"+conflicts.join("\n"));
+            return;
+        }
+
+        var seriesId = Date.now().toString();
+        await writeBookings(dates, room, startIdx, endIdx, seriesId, booker, subject, start, end);
+        hideLoading();
+        alert("預約成功！共建立了 "+dates.length+" 筆紀錄。");
+        closeModal('booking-modal');
+        renderTable();
+        renderActivityLog();
+    }
+
+    window.openManageModal = function(date, room, id) {
+        var foundSlot = allSlots.find(function(s){ var b=getBooking(date,room,s); return b && b.id===id; });
+        var booking = getBooking(date, room, foundSlot);
+        if (!booking) return;
+        var start = booking.fullRange.split(' - ')[0];
+        var end = booking.fullRange.split(' - ')[1];
+        document.getElementById('manage-booking-id').value = id;
+        document.getElementById('manage-series-id').value = booking.seriesId;
+        document.getElementById('manage-date').value = date;
+        document.getElementById('manage-date-display').innerText = date;
+        document.getElementById('manage-room-display').innerText = room;
+        document.getElementById('manage-booker').value = booking.booker;
+        document.getElementById('manage-subject').value = booking.subject;
+        document.getElementById('manage-scope').value = 'single';
+        document.getElementById('manage-repeat').value = 'none';
+        toggleRepeatDate('manage-repeat','manage-repeat-end-group','manage-repeat-end');
+        var startSel = document.getElementById('manage-start-time');
+        startSel.innerHTML = "";
+        allSlots.forEach(function(s) {
+            var opt = document.createElement('option');
+            opt.value = s; opt.text = s;
+            if (s === start) opt.selected = true;
+            startSel.appendChild(opt);
+        });
+        updateManageEndTime(start, end, date, room, id);
+        hideDeletePanel();
+        document.getElementById('manage-modal').style.display = "flex";
+    }
+
+    window.updateManageEndTime = function(defaultStart, defaultEnd, dateStr, roomStr, bookingId) {
+        var startVal = document.getElementById('manage-start-time').value || defaultStart;
+        var endSel = document.getElementById('manage-end-time');
+        endSel.innerHTML = "";
+        var d = dateStr || document.getElementById('manage-date').value;
+        var r = roomStr || document.getElementById('manage-room-display').innerText;
+        var bId = bookingId || document.getElementById('manage-booking-id').value;
+        var idx = allSlots.indexOf(startVal);
+        for (var j = idx+1; j <= allSlots.length; j++) {
+            var prevSlot = allSlots[j-1];
+            var existing = getBooking(d, r, prevSlot);
+            if (existing && existing.id !== bId) break;
+            var end = (j === allSlots.length) ? "18:00" : allSlots[j];
+            var opt = document.createElement('option');
+            opt.value = end;
+            opt.text = end+" (計 "+((j-idx)*0.5)+" 小時)";
+            if (defaultEnd && end === defaultEnd) opt.selected = true;
+            endSel.appendChild(opt);
+        }
+    }
+
+    window.handleEditSubmit = async function(e) {
+        e.preventDefault();
+        var id = document.getElementById('manage-booking-id').value;
+        var seriesId = document.getElementById('manage-series-id').value;
+        var baseDateStr = document.getElementById('manage-date').value;
+        var room = document.getElementById('manage-room-display').innerText;
+        var booker = document.getElementById('manage-booker').value;
+        var subject = document.getElementById('manage-subject').value;
+        var newStart = document.getElementById('manage-start-time').value;
+        var newEnd = document.getElementById('manage-end-time').value;
+        var scope = document.getElementById('manage-scope').value;
+        var repeat = document.getElementById('manage-repeat').value;
+        var repeatEndStr = document.getElementById('manage-repeat-end').value;
+        var startIdx = allSlots.indexOf(newStart);
+        var endIdx = (newEnd === "18:00") ? allSlots.length : allSlots.indexOf(newEnd);
+
+        showLoading();
+
+        // 步驟1：清舊資料
+        if (scope === 'series') {
+            var allDates = Object.keys(bookingDatabase);
+            for (var i = 0; i < allDates.length; i++) {
+                var d = allDates[i];
+                if (new Date(d) >= new Date(baseDateStr)) {
+                    var rData = (bookingDatabase[d] && bookingDatabase[d][roomKey(room)]) ? Object.assign({}, bookingDatabase[d][roomKey(room)]) : {};
+                    for (var s in rData) {
+                        if (rData[s] && rData[s].seriesId === seriesId) await deleteSlot(d, room, s);
+                    }
+                }
+            }
+        } else {
+            var toDelete = allSlots.filter(function(s){ var b=getBooking(baseDateStr,room,s); return b && b.id===id; });
+            for (var i = 0; i < toDelete.length; i++) await deleteSlot(baseDateStr, room, toDelete[i]);
+        }
+
+        // 步驟2：載入目標日期
+        var datesToWrite = generateRepeatDates(baseDateStr, repeat, repeatEndStr);
+        for (var i = 0; i < datesToWrite.length; i++) {
+            if (!bookingDatabase[datesToWrite[i]]) {
+                var snap = await get(child(ref(db), 'bookings/'+dbKey(datesToWrite[i])));
+                bookingDatabase[datesToWrite[i]] = snap.exists() ? snap.val() : {};
+            }
+        }
+
+        // 步驟3：衝突檢測
+        var conflicts = [];
+        datesToWrite.forEach(function(d) {
+            for (var k = startIdx; k < endIdx; k++) {
+                if (getBooking(d, room, allSlots[k])) { conflicts.push(d); break; }
+            }
+        });
+        if (conflicts.length > 0) {
+            hideLoading();
+            alert("修改失敗！以下日期與他人預約衝突：\n"+conflicts.join("\n")+"\n\n請調整時間後再試。");
+            await loadDateData(baseDateStr);
+            renderTable(); renderActivityLog();
+            return;
+        }
+
+        // 步驟4：寫入
+        var newSeriesId = Date.now().toString();
+        await writeBookings(datesToWrite, room, startIdx, endIdx, newSeriesId, booker, subject, newStart, newEnd);
+        hideLoading();
+        alert("修改成功！共更新 "+datesToWrite.length+" 筆紀錄。");
+        closeModal('manage-modal');
+        renderTable(); renderActivityLog();
+    }
+
+    window.showDeletePanel = function() {
+        document.getElementById('manage-main-panel').style.display = 'none';
+        document.getElementById('delete-panel').style.display = 'block';
+    }
+
+    window.hideDeletePanel = function() {
+        document.getElementById('manage-main-panel').style.display = 'block';
+        document.getElementById('delete-panel').style.display = 'none';
+    }
+
+    window.handleDelete = async function(mode) {
+        var id = document.getElementById('manage-booking-id').value;
+        var seriesId = document.getElementById('manage-series-id').value;
+        var date = document.getElementById('manage-date').value;
+        var room = document.getElementById('manage-room-display').innerText;
+
+        showLoading();
+        if (mode === 'series') {
+            var allDates = Object.keys(bookingDatabase);
+            for (var i = 0; i < allDates.length; i++) {
+                var d = allDates[i];
+                if (new Date(d) >= new Date(date)) {
+                    var rData = (bookingDatabase[d] && bookingDatabase[d][roomKey(room)]) ? Object.assign({}, bookingDatabase[d][roomKey(room)]) : {};
+                    for (var s in rData) {
+                        if (rData[s] && rData[s].seriesId === seriesId) await deleteSlot(d, room, s);
+                    }
+                }
+            }
+            alert("已刪除此次及之後所有週期預約。");
+        } else {
+            var toDelete = allSlots.filter(function(s){ var b=getBooking(date,room,s); return b && b.id===id; });
+            for (var i = 0; i < toDelete.length; i++) await deleteSlot(date, room, toDelete[i]);
+            alert("已刪除此單次預約。");
+        }
+        hideLoading();
+        closeModal('manage-modal');
+        renderTable(); renderActivityLog();
+    }
+
+    function renderActivityLog() {
+        var date = document.getElementById('booking-date').value;
+        var list = document.getElementById('log-list');
+        list.innerHTML = "";
+        var daily = [];
+        if (bookingDatabase[date]) {
+            rooms.forEach(function(r) {
+                var ids = [];
+                allSlots.forEach(function(s) {
+                    var b = getBooking(date, r, s);
+                    if (b && ids.indexOf(b.id) === -1) {
+                        daily.push({ room:r, range:b.fullRange, booker:b.booker, subject:b.subject });
+                        ids.push(b.id);
+                    }
+                });
+            });
+        }
+        if (daily.length === 0) { list.innerHTML="<li><span class='empty-log'>本日尚無預約。</span></li>"; return; }
+        daily.sort(function(a,b){ return a.range.localeCompare(b.range); });
+        daily.forEach(function(l) {
+            list.innerHTML += '<li><span class="log-time">'+l.range+'</span><span class="log-room">'+l.room+'</span> 由 <strong>'+l.booker+'</strong> 預約：'+l.subject+'</li>';
+        });
+    }
+
+    window.closeModal = function(id) {
+        document.getElementById(id).style.display = "none";
+    }
+
+    // 初始化
+    var today = new Date();
+    var y = today.getFullYear();
+    var m = String(today.getMonth()+1).padStart(2,'0');
+    var d = String(today.getDate()).padStart(2,'0');
+    document.getElementById('booking-date').value = y+"-"+m+"-"+d;
+    renderAll();
+</script>
+</body>
+</html>
