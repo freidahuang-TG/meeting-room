@@ -5,10 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>研發處會議室預約版</title>
     <style>
-        :root {
-            --header-bg: #34495e; --booked-bg: #e74c3c; --booked-hover-bg: #c0392b;
-            --main-font-color: #333; --border-color: #ddd;
-        }
+        :root { --header-bg: #34495e; --booked-bg: #e74c3c; --booked-hover-bg: #c0392b; --main-font-color: #333; --border-color: #ddd; }
         body { font-family: "Microsoft JhengHei", "Segoe UI", sans-serif; background-color: #f0f2f5; margin: 0; padding: 20px; color: var(--main-font-color); }
         .container { max-width: 1450px; margin: 0 auto; background: #fff; padding: 30px; border-radius: 12px; box-shadow: 0 5px 20px rgba(0,0,0,0.08); }
         h2, h3 { text-align: center; color: #2c3e50; margin-bottom: 25px; }
@@ -59,7 +56,7 @@
 </head>
 <body>
 
-<div id="loading-overlay">資料載入中，請稍候⋯</div>
+<div id="loading-overlay">資料處理中，請稍候⋯</div>
 
 <div class="container">
     <h2>研發處會議室預約版</h2>
@@ -173,48 +170,102 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
     import { getDatabase, ref, set, get, remove, child } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
 
-    const firebaseConfig = {
-        databaseURL: "https://booking-rd-meeting-room-default-rtdb.firebaseio.com"
-    };
+    const firebaseConfig = { databaseURL: "https://booking-rd-meeting-room-default-rtdb.firebaseio.com" };
     const app = initializeApp(firebaseConfig);
     const db = getDatabase(app);
 
     var rooms = ["NO.1會議室","NO.2會議室","NO.3會議室","NO.4會議室","NO.5會議室"];
     var allSlots = [];
     for (var h = 8; h < 18; h++) {
-        var hh = h.toString().padStart(2,'0');
-        allSlots.push(hh+":00");
-        allSlots.push(hh+":30");
+        allSlots.push(h.toString().padStart(2,'0')+":00");
+        allSlots.push(h.toString().padStart(2,'0')+":30");
     }
-    var bookingDatabase = {};
+    var bookingCache = {};
 
     function showLoading() { document.getElementById('loading-overlay').style.display = 'flex'; }
     function hideLoading() { document.getElementById('loading-overlay').style.display = 'none'; }
-
     function dbKey(date) { return date.replace(/-/g,''); }
-
-    function roomKey(room) { return room.replace(/\./g,'_').replace(/\s/g,'_'); }
+    function rKey(room) { return room.replace(/[\.\s]/g,'_'); }
 
     function getBooking(date, room, slot) {
-        if (bookingDatabase[date] && bookingDatabase[date][roomKey(room)]) return bookingDatabase[date][roomKey(room)][slot];
+        var dk = dbKey(date), rk = rKey(room);
+        if (bookingCache[dk] && bookingCache[dk][rk]) return bookingCache[dk][rk][slot] || null;
         return null;
     }
 
-    async function loadDateData(date) {
-        showLoading();
-        try {
-            var snap = await get(child(ref(db), 'bookings/'+dbKey(date)));
-            bookingDatabase[date] = snap.exists() ? snap.val() : {};
-        } catch(e) {
-            alert("資料載入失敗，請確認網路連線。");
-            bookingDatabase[date] = {};
+    async function loadDate(date) {
+        var dk = dbKey(date);
+        if (bookingCache[dk]) return;
+        var snap = await get(child(ref(db), 'bookings/'+dk));
+        bookingCache[dk] = snap.exists() ? snap.val() : {};
+    }
+
+    // 取得某 seriesId 從指定日期起的所有日期（從 Firebase series 節點）
+    async function getSeriesDatesFrom(seriesId, fromDate) {
+        var snap = await get(child(ref(db), 'series/'+seriesId+'/dates'));
+        if (!snap.exists()) return [];
+        var allDates = snap.val();
+        return allDates.filter(function(d){ return d >= fromDate; });
+    }
+
+    // 寫入 series 索引
+    async function writeSeriesIndex(seriesId, room, dates) {
+        await set(ref(db, 'series/'+seriesId), { room: rKey(room), dates: dates });
+    }
+
+    // 刪除 series 索引
+    async function removeSeriesIndex(seriesId) {
+        await remove(ref(db, 'series/'+seriesId));
+    }
+
+    async function writeSlots(date, room, startIdx, endIdx, seriesId, booker, subject, start, end) {
+        var dk = dbKey(date), rk = rKey(room);
+        var bid = seriesId+'-'+dk;
+        var entry = { id:bid, seriesId:seriesId, booker:booker, subject:subject, fullRange:start+" - "+end };
+        for (var k = startIdx; k < endIdx; k++) {
+            await set(ref(db, 'bookings/'+dk+'/'+rk+'/'+allSlots[k]), entry);
+            if (!bookingCache[dk]) bookingCache[dk] = {};
+            if (!bookingCache[dk][rk]) bookingCache[dk][rk] = {};
+            bookingCache[dk][rk][allSlots[k]] = entry;
         }
-        hideLoading();
+    }
+
+    async function deleteSlots(date, room, filterFn) {
+        var dk = dbKey(date), rk = rKey(room);
+        if (!bookingCache[dk] || !bookingCache[dk][rk]) return;
+        var slots = Object.keys(bookingCache[dk][rk]).filter(function(s){ return filterFn(bookingCache[dk][rk][s]); });
+        for (var i = 0; i < slots.length; i++) {
+            await remove(ref(db, 'bookings/'+dk+'/'+rk+'/'+slots[i]));
+            delete bookingCache[dk][rk][slots[i]];
+        }
+    }
+
+    function checkConflict(date, room, startIdx, endIdx) {
+        for (var k = startIdx; k < endIdx; k++) {
+            if (getBooking(date, room, allSlots[k])) return true;
+        }
+        return false;
+    }
+
+    function generateDates(baseDateStr, repeatType, repeatEndStr) {
+        var dates = [];
+        if (repeatType !== 'none' && repeatEndStr) {
+            var curr = new Date(baseDateStr+'T00:00:00');
+            var end = new Date(repeatEndStr+'T00:00:00');
+            var step = (repeatType === 'weekly') ? 7 : 14;
+            while (curr <= end) {
+                dates.push(curr.getFullYear()+"-"+String(curr.getMonth()+1).padStart(2,'0')+"-"+String(curr.getDate()).padStart(2,'0'));
+                curr.setDate(curr.getDate()+step);
+            }
+        } else { dates.push(baseDateStr); }
+        return dates;
     }
 
     window.renderAll = async function() {
         var date = document.getElementById('booking-date').value;
-        await loadDateData(date);
+        showLoading();
+        await loadDate(date);
+        hideLoading();
         renderTable();
         renderActivityLog();
     }
@@ -233,20 +284,18 @@
                 var td = document.createElement('td');
                 if (booking) {
                     var range = booking.fullRange.split(' - ');
-                    var startIdx = allSlots.indexOf(range[0]);
-                    var endIdx = range[1] === "18:00" ? allSlots.length : allSlots.indexOf(range[1]);
-                    var span = endIdx - startIdx;
+                    var si = allSlots.indexOf(range[0]);
+                    var ei = range[1]==="18:00" ? allSlots.length : allSlots.indexOf(range[1]);
+                    var span = ei - si;
                     td.colSpan = span;
                     td.className = "status-booked";
                     td.onclick = (function(d,r,id){ return function(){ openManageModal(d,r,id); }; })(date,room,booking.id);
                     td.innerHTML = '<div class="booked-content"><span class="booked-booker">'+booking.booker+'</span><span class="booked-subject">'+booking.subject+'</span></div>';
-                    tr.appendChild(td);
-                    i += span;
+                    tr.appendChild(td); i += span;
                 } else {
                     td.className = "status-available";
                     td.onclick = (function(r,s){ return function(){ openBookingModal(r,s); }; })(room,slot);
-                    tr.appendChild(td);
-                    i++;
+                    tr.appendChild(td); i++;
                 }
             }
             tbody.appendChild(tr);
@@ -255,10 +304,9 @@
 
     window.toggleRepeatDate = function(selectId, groupId, inputId) {
         var val = document.getElementById(selectId).value;
-        var grp = document.getElementById(groupId);
+        document.getElementById(groupId).style.display = val==='none' ? 'none' : 'block';
         var inp = document.getElementById(inputId);
-        if (val === 'none') { grp.style.display='none'; inp.removeAttribute('required'); }
-        else { grp.style.display='block'; inp.setAttribute('required','true'); }
+        val==='none' ? inp.removeAttribute('required') : inp.setAttribute('required','true');
     }
 
     window.openBookingModal = function(room, start) {
@@ -272,53 +320,12 @@
         var idx = allSlots.indexOf(start);
         for (var j = idx+1; j <= allSlots.length; j++) {
             if (j > idx+1 && getBooking(date, room, allSlots[j-1])) break;
-            var end = (j === allSlots.length) ? "18:00" : allSlots[j];
+            var end = j===allSlots.length ? "18:00" : allSlots[j];
             var opt = document.createElement('option');
-            opt.value = end;
-            opt.text = end+" (計 "+((j-idx)*0.5)+" 小時)";
+            opt.value = end; opt.text = end+" (計 "+((j-idx)*0.5)+" 小時)";
             select.appendChild(opt);
         }
         document.getElementById('booking-modal').style.display = "flex";
-    }
-
-    function generateRepeatDates(baseDateStr, repeatType, repeatEndStr) {
-        var dates = [];
-        if (repeatType !== 'none' && repeatEndStr) {
-            var curr = new Date(baseDateStr+'T00:00:00');
-            var end = new Date(repeatEndStr+'T00:00:00');
-            var step = (repeatType === 'weekly') ? 7 : 14;
-            while (curr <= end) {
-                var y = curr.getFullYear();
-                var m = String(curr.getMonth()+1).padStart(2,'0');
-                var d = String(curr.getDate()).padStart(2,'0');
-                dates.push(y+"-"+m+"-"+d);
-                curr.setDate(curr.getDate()+step);
-            }
-        } else {
-            dates.push(baseDateStr);
-        }
-        return dates;
-    }
-
-    async function writeBookings(dates, room, startIdx, endIdx, seriesId, booker, subject, start, end) {
-        for (var i = 0; i < dates.length; i++) {
-            var d = dates[i];
-            var bid = seriesId+'-'+d;
-            var entry = { id:bid, seriesId:seriesId, booker:booker, subject:subject, fullRange:start+" - "+end };
-            for (var k = startIdx; k < endIdx; k++) {
-                await set(ref(db, 'bookings/'+dbKey(d)+'/'+roomKey(room)+'/'+allSlots[k]), entry);
-                if (!bookingDatabase[d]) bookingDatabase[d] = {};
-                if (!bookingDatabase[d][roomKey(room)]) bookingDatabase[d][roomKey(room)] = {};
-                bookingDatabase[d][roomKey(room)][allSlots[k]] = entry;
-            }
-        }
-    }
-
-    async function deleteSlot(date, room, slot) {
-        await remove(ref(db, 'bookings/'+dbKey(date)+'/'+roomKey(room)+'/'+slot));
-        if (bookingDatabase[date] && bookingDatabase[date][roomKey(room)]) {
-            delete bookingDatabase[date][roomKey(room)][slot];
-        }
     }
 
     window.handleBookingSubmit = async function(e) {
@@ -332,36 +339,38 @@
         var repeat = document.getElementById('modal-repeat').value;
         var repeatEndStr = document.getElementById('modal-repeat-end').value;
         var startIdx = allSlots.indexOf(start);
-        var endIdx = (end === "18:00") ? allSlots.length : allSlots.indexOf(end);
-        var dates = generateRepeatDates(baseDateStr, repeat, repeatEndStr);
+        var endIdx = end==="18:00" ? allSlots.length : allSlots.indexOf(end);
+        var dates = generateDates(baseDateStr, repeat, repeatEndStr);
 
         showLoading();
-        for (var i = 0; i < dates.length; i++) {
-            if (!bookingDatabase[dates[i]]) {
-                var snap = await get(child(ref(db), 'bookings/'+dbKey(dates[i])));
-                bookingDatabase[dates[i]] = snap.exists() ? snap.val() : {};
-            }
-        }
+        // 載入所有目標日期資料
+        for (var i = 0; i < dates.length; i++) await loadDate(dates[i]);
 
-        var conflicts = [];
-        dates.forEach(function(d) {
-            for (var k = startIdx; k < endIdx; k++) {
-                if (getBooking(d, room, allSlots[k])) { conflicts.push(d); break; }
-            }
-        });
-        if (conflicts.length > 0) {
-            hideLoading();
-            alert("預約失敗！以下日期時段已被佔用：\n"+conflicts.join("\n"));
-            return;
-        }
-
+        var skipped = [], booked = [];
         var seriesId = Date.now().toString();
-        await writeBookings(dates, room, startIdx, endIdx, seriesId, booker, subject, start, end);
+
+        for (var i = 0; i < dates.length; i++) {
+            if (checkConflict(dates[i], room, startIdx, endIdx)) {
+                skipped.push(dates[i]);
+            } else {
+                await writeSlots(dates[i], room, startIdx, endIdx, seriesId, booker, subject, start, end);
+                booked.push(dates[i]);
+            }
+        }
+
+        // 寫入 series 索引（只記錄成功建立的日期）
+        if (booked.length > 0 && repeat !== 'none') {
+            await writeSeriesIndex(seriesId, room, booked);
+        }
+
         hideLoading();
-        alert("預約成功！共建立了 "+dates.length+" 筆紀錄。");
+
+        var msg = "預約完成！成功建立 "+booked.length+" 筆。";
+        if (skipped.length > 0) msg += "\n\n以下日期因衝突未建立，請另找會議室：\n"+skipped.join("\n");
+        alert(msg);
+
         closeModal('booking-modal');
-        renderTable();
-        renderActivityLog();
+        renderTable(); renderActivityLog();
     }
 
     window.openManageModal = function(date, room, id) {
@@ -385,7 +394,7 @@
         allSlots.forEach(function(s) {
             var opt = document.createElement('option');
             opt.value = s; opt.text = s;
-            if (s === start) opt.selected = true;
+            if (s===start) opt.selected = true;
             startSel.appendChild(opt);
         });
         updateManageEndTime(start, end, date, room, id);
@@ -402,14 +411,12 @@
         var bId = bookingId || document.getElementById('manage-booking-id').value;
         var idx = allSlots.indexOf(startVal);
         for (var j = idx+1; j <= allSlots.length; j++) {
-            var prevSlot = allSlots[j-1];
-            var existing = getBooking(d, r, prevSlot);
+            var existing = getBooking(d, r, allSlots[j-1]);
             if (existing && existing.id !== bId) break;
-            var end = (j === allSlots.length) ? "18:00" : allSlots[j];
+            var end = j===allSlots.length ? "18:00" : allSlots[j];
             var opt = document.createElement('option');
-            opt.value = end;
-            opt.text = end+" (計 "+((j-idx)*0.5)+" 小時)";
-            if (defaultEnd && end === defaultEnd) opt.selected = true;
+            opt.value = end; opt.text = end+" (計 "+((j-idx)*0.5)+" 小時)";
+            if (defaultEnd && end===defaultEnd) opt.selected = true;
             endSel.appendChild(opt);
         }
     }
@@ -428,56 +435,69 @@
         var repeat = document.getElementById('manage-repeat').value;
         var repeatEndStr = document.getElementById('manage-repeat-end').value;
         var startIdx = allSlots.indexOf(newStart);
-        var endIdx = (newEnd === "18:00") ? allSlots.length : allSlots.indexOf(newEnd);
+        var endIdx = newEnd==="18:00" ? allSlots.length : allSlots.indexOf(newEnd);
 
         showLoading();
 
-        // 步驟1：清舊資料
         if (scope === 'series') {
-            var allDates = Object.keys(bookingDatabase);
-            for (var i = 0; i < allDates.length; i++) {
-                var d = allDates[i];
-                if (new Date(d) >= new Date(baseDateStr)) {
-                    var rData = (bookingDatabase[d] && bookingDatabase[d][roomKey(room)]) ? Object.assign({}, bookingDatabase[d][roomKey(room)]) : {};
-                    for (var s in rData) {
-                        if (rData[s] && rData[s].seriesId === seriesId) await deleteSlot(d, room, s);
-                    }
+            // 從 Firebase series 索引取得完整日期清單
+            var seriesDates = await getSeriesDatesFrom(seriesId, baseDateStr);
+
+            // 載入所有涉及日期的資料到 cache
+            for (var i = 0; i < seriesDates.length; i++) await loadDate(seriesDates[i]);
+
+            // 先清掉舊資料
+            for (var i = 0; i < seriesDates.length; i++) {
+                await deleteSlots(seriesDates[i], room, function(b){ return b && b.seriesId===seriesId; });
+            }
+            // 清掉舊 series 索引
+            await removeSeriesIndex(seriesId);
+
+            // 產生新目標日期
+            var datesToWrite = generateDates(baseDateStr, repeat, repeatEndStr);
+            for (var i = 0; i < datesToWrite.length; i++) await loadDate(datesToWrite[i]);
+
+            var skipped = [], written = [];
+            var newSeriesId = Date.now().toString();
+            for (var i = 0; i < datesToWrite.length; i++) {
+                if (checkConflict(datesToWrite[i], room, startIdx, endIdx)) {
+                    skipped.push(datesToWrite[i]);
+                } else {
+                    await writeSlots(datesToWrite[i], room, startIdx, endIdx, newSeriesId, booker, subject, newStart, newEnd);
+                    written.push(datesToWrite[i]);
                 }
             }
-        } else {
-            var toDelete = allSlots.filter(function(s){ var b=getBooking(baseDateStr,room,s); return b && b.id===id; });
-            for (var i = 0; i < toDelete.length; i++) await deleteSlot(baseDateStr, room, toDelete[i]);
-        }
+            if (written.length > 0 && repeat !== 'none') await writeSeriesIndex(newSeriesId, room, written);
 
-        // 步驟2：載入目標日期
-        var datesToWrite = generateRepeatDates(baseDateStr, repeat, repeatEndStr);
-        for (var i = 0; i < datesToWrite.length; i++) {
-            if (!bookingDatabase[datesToWrite[i]]) {
-                var snap = await get(child(ref(db), 'bookings/'+dbKey(datesToWrite[i])));
-                bookingDatabase[datesToWrite[i]] = snap.exists() ? snap.val() : {};
-            }
-        }
-
-        // 步驟3：衝突檢測
-        var conflicts = [];
-        datesToWrite.forEach(function(d) {
-            for (var k = startIdx; k < endIdx; k++) {
-                if (getBooking(d, room, allSlots[k])) { conflicts.push(d); break; }
-            }
-        });
-        if (conflicts.length > 0) {
             hideLoading();
-            alert("修改失敗！以下日期與他人預約衝突：\n"+conflicts.join("\n")+"\n\n請調整時間後再試。");
-            await loadDateData(baseDateStr);
-            renderTable(); renderActivityLog();
-            return;
+            var msg = "修改完成！成功更新 "+written.length+" 筆。";
+            if (skipped.length > 0) msg += "\n\n以下日期因衝突未寫入，請另找會議室：\n"+skipped.join("\n");
+            alert(msg);
+
+        } else {
+            // 單次修改
+            await deleteSlots(baseDateStr, room, function(b){ return b && b.id===id; });
+            var newSeriesId = Date.now().toString();
+            var datesToWrite = generateDates(baseDateStr, repeat, repeatEndStr);
+            for (var i = 0; i < datesToWrite.length; i++) await loadDate(datesToWrite[i]);
+
+            var skipped = [], written = [];
+            for (var i = 0; i < datesToWrite.length; i++) {
+                if (checkConflict(datesToWrite[i], room, startIdx, endIdx)) {
+                    skipped.push(datesToWrite[i]);
+                } else {
+                    await writeSlots(datesToWrite[i], room, startIdx, endIdx, newSeriesId, booker, subject, newStart, newEnd);
+                    written.push(datesToWrite[i]);
+                }
+            }
+            if (written.length > 0 && repeat !== 'none') await writeSeriesIndex(newSeriesId, room, written);
+
+            hideLoading();
+            var msg = "修改完成！成功更新 "+written.length+" 筆。";
+            if (skipped.length > 0) msg += "\n\n以下日期因衝突未寫入，請另找會議室：\n"+skipped.join("\n");
+            alert(msg);
         }
 
-        // 步驟4：寫入
-        var newSeriesId = Date.now().toString();
-        await writeBookings(datesToWrite, room, startIdx, endIdx, newSeriesId, booker, subject, newStart, newEnd);
-        hideLoading();
-        alert("修改成功！共更新 "+datesToWrite.length+" 筆紀錄。");
         closeModal('manage-modal');
         renderTable(); renderActivityLog();
     }
@@ -486,7 +506,6 @@
         document.getElementById('manage-main-panel').style.display = 'none';
         document.getElementById('delete-panel').style.display = 'block';
     }
-
     window.hideDeletePanel = function() {
         document.getElementById('manage-main-panel').style.display = 'block';
         document.getElementById('delete-panel').style.display = 'none';
@@ -500,20 +519,16 @@
 
         showLoading();
         if (mode === 'series') {
-            var allDates = Object.keys(bookingDatabase);
-            for (var i = 0; i < allDates.length; i++) {
-                var d = allDates[i];
-                if (new Date(d) >= new Date(date)) {
-                    var rData = (bookingDatabase[d] && bookingDatabase[d][roomKey(room)]) ? Object.assign({}, bookingDatabase[d][roomKey(room)]) : {};
-                    for (var s in rData) {
-                        if (rData[s] && rData[s].seriesId === seriesId) await deleteSlot(d, room, s);
-                    }
-                }
+            // 從 Firebase series 索引取得完整日期清單
+            var seriesDates = await getSeriesDatesFrom(seriesId, date);
+            for (var i = 0; i < seriesDates.length; i++) {
+                await loadDate(seriesDates[i]);
+                await deleteSlots(seriesDates[i], room, function(b){ return b && b.seriesId===seriesId; });
             }
+            await removeSeriesIndex(seriesId);
             alert("已刪除此次及之後所有週期預約。");
         } else {
-            var toDelete = allSlots.filter(function(s){ var b=getBooking(date,room,s); return b && b.id===id; });
-            for (var i = 0; i < toDelete.length; i++) await deleteSlot(date, room, toDelete[i]);
+            await deleteSlots(date, room, function(b){ return b && b.id===id; });
             alert("已刪除此單次預約。");
         }
         hideLoading();
@@ -523,38 +538,35 @@
 
     function renderActivityLog() {
         var date = document.getElementById('booking-date').value;
+        var dk = dbKey(date);
         var list = document.getElementById('log-list');
         list.innerHTML = "";
         var daily = [];
-        if (bookingDatabase[date]) {
+        if (bookingCache[dk]) {
             rooms.forEach(function(r) {
-                var ids = [];
+                var rk = rKey(r), ids = [];
+                if (!bookingCache[dk][rk]) return;
                 allSlots.forEach(function(s) {
-                    var b = getBooking(date, r, s);
-                    if (b && ids.indexOf(b.id) === -1) {
+                    var b = bookingCache[dk][rk][s];
+                    if (b && ids.indexOf(b.id)===-1) {
                         daily.push({ room:r, range:b.fullRange, booker:b.booker, subject:b.subject });
                         ids.push(b.id);
                     }
                 });
             });
         }
-        if (daily.length === 0) { list.innerHTML="<li><span class='empty-log'>本日尚無預約。</span></li>"; return; }
+        if (daily.length===0) { list.innerHTML="<li><span class='empty-log'>本日尚無預約。</span></li>"; return; }
         daily.sort(function(a,b){ return a.range.localeCompare(b.range); });
         daily.forEach(function(l) {
             list.innerHTML += '<li><span class="log-time">'+l.range+'</span><span class="log-room">'+l.room+'</span> 由 <strong>'+l.booker+'</strong> 預約：'+l.subject+'</li>';
         });
     }
 
-    window.closeModal = function(id) {
-        document.getElementById(id).style.display = "none";
-    }
+    window.closeModal = function(id) { document.getElementById(id).style.display = "none"; }
 
     // 初始化
     var today = new Date();
-    var y = today.getFullYear();
-    var m = String(today.getMonth()+1).padStart(2,'0');
-    var d = String(today.getDate()).padStart(2,'0');
-    document.getElementById('booking-date').value = y+"-"+m+"-"+d;
+    document.getElementById('booking-date').value = today.getFullYear()+"-"+String(today.getMonth()+1).padStart(2,'0')+"-"+String(today.getDate()).padStart(2,'0');
     renderAll();
 </script>
 </body>
